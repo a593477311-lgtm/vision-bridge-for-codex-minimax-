@@ -1,0 +1,4 @@
+interface:
+  display_name: "多模态识图/生图"
+  short_description: "图片/视频理解 + MiniMax 文生图，结果回到主对话"
+  default_prompt: "Use $vision-bridge to analyze the attached image or video, or generate an image from a description."

@@ -1,0 +1,14 @@
+{
+  "primary": {
+    "provider": "minimax",
+    "base_url": "https://api.minimaxi.com/v1",
+    "api_key": "YOUR_MINIMAX_API_KEY",
+    "model": "MiniMax-M3"
+  },
+  "fallback": {
+    "provider": "glm",
+    "base_url": "https://open.bigmodel.cn/api/paas/v4",
+    "api_key": "YOUR_ZHIPU_API_KEY",
+    "model": "glm-4.1v-thinking-flash"
+  }
+}

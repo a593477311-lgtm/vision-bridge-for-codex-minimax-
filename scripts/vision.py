@@ -30,11 +30,15 @@
   python vision.py 图片.png -p "..." --thinking     # 开启深度思考
   python vision.py 图片.png -p "..." --json          # 输出完整原始 JSON
   python vision.py 图片.png -p "..." --provider glm  # 强制指定提供商
+  python vision.py 图片.png -p "..." --concise       # 简短回答（≤200字、不用 emoji/表格）
+  python vision.py 图片.png -p "..." --max-tokens 400  # 限制回答长度
 
 文生图示例：
   python vision.py --generate "一只橘猫坐在窗台上，黄昏光线，电影感"
   python vision.py --generate "..." --gen-model image-01-live --style "..." --aspect-ratio 16:9 --count 2 --save-dir ./outputs
 """
+from __future__ import annotations
+
 import argparse
 import base64
 import io
@@ -98,6 +102,15 @@ REQUEST_BODY_MAX_BYTES = 64 * 1024 * 1024
 IMAGE_COMPRESS_TARGET = 8 * 1024 * 1024
 IMAGE_COMPRESS_TARGET_TIGHT = 1_500_000
 DOWNLOAD_HARD_CAP = 600 * 1024 * 1024
+
+
+def _suffix_of(item: str) -> str:
+    """返回本地路径或 URL 的小写扩展名（正确处理查询参数）。"""
+    if item.startswith(("http://", "https://")):
+        return Path(urlparse(item).path).suffix.lower()
+    if item.startswith(("data:", "mm_file://")):
+        return ""
+    return Path(item).suffix.lower()
 
 
 class PayloadTooLargeError(RuntimeError):
@@ -373,7 +386,7 @@ def auto_fps_for(item: str) -> float | None:
 
 def prepare_image(item: str, detail: str | None, max_long_side_pixel: int | None, tight: bool) -> dict:
     p = Path(item)
-    if p.suffix.lower() in AUDIO_EXTS:
+    if _suffix_of(item) in AUDIO_EXTS:
         sys.exit("音频输入暂不支持：MiniMax-M3 官方文档明确当前不支持音频输入。")
 
     temp_files = []
@@ -448,7 +461,7 @@ def prepare_video(
     p = Path(item)
     if not p.exists():
         sys.exit(f"文件不存在: {item}")
-    ext = p.suffix.lower()
+    ext = _suffix_of(item)
     if ext in AUDIO_EXTS:
         sys.exit("音频输入暂不支持：MiniMax-M3 官方文档明确当前不支持音频输入。")
     if ext not in VIDEO_EXTS:
@@ -533,11 +546,14 @@ def build_content(
     return content
 
 
-def build_payload(provider: dict, content: list, thinking: str | None) -> dict:
+def build_payload(provider: dict, content: list, thinking: str | None, max_tokens: int | None = None) -> dict:
     payload = {
         "model": provider["model"],
         "messages": [{"role": "user", "content": content}],
     }
+    if max_tokens:
+        key = "max_completion_tokens" if provider["name"] == "minimax" else "max_tokens"
+        payload[key] = max_tokens
     if thinking:
         if provider["name"] == "minimax":
             payload["thinking"] = {"type": "adaptive" if thinking == "enabled" else "disabled"}
@@ -570,11 +586,16 @@ def call_provider(provider: dict, payload: dict, timeout: int) -> dict:
         except urllib.error.HTTPError as e:
             body = e.read().decode("utf-8", errors="replace")
             last_error = f"HTTP {e.code}: {body}"
-            if e.code == 429 and attempt < 3:
+            if (e.code == 429 or e.code >= 500) and attempt < 3:
                 wait = 5 * (2 ** attempt)
-                print(f"[{provider['name']} 限流 429] {wait} 秒后重试（第 {attempt + 1} 次）...", file=sys.stderr)
+                retry_after = e.headers.get("Retry-After")
+                if retry_after and retry_after.isdigit():
+                    wait = min(int(retry_after), 60)
+                print(f"[{provider['name']} HTTP {e.code}] {wait} 秒后重试（第 {attempt + 1} 次）...", file=sys.stderr)
                 time.sleep(wait)
                 continue
+            if e.code == 422 and "sensitive" in body.lower():
+                last_error += "（可能触发内容安全过滤，请调整图片/描述后重试，或使用 --provider glm）"
             break
         except urllib.error.URLError as e:
             last_error = f"网络错误: {e.reason}"
@@ -720,7 +741,9 @@ def main() -> None:
     parser.add_argument("--no-thinking", action="store_true", help="显式关闭深度思考模式")
     parser.add_argument("--api-key", help="临时覆盖主提供商 API Key")
     parser.add_argument("--json", action="store_true", help="输出完整原始 JSON 响应")
-    parser.add_argument("--timeout", type=int, default=120, help="单次请求超时秒数，默认 120（大文件上传可调大）")
+    parser.add_argument("--timeout", type=int, default=180, help="单次请求超时秒数，默认 180（大文件上传可调大）")
+    parser.add_argument("--max-tokens", type=int, help="限制回答最大 token 数（批量检查推荐 300-900）")
+    parser.add_argument("--concise", action="store_true", help="要求简洁中文回答（≤200字、不用 emoji/表格），默认 max-tokens=400")
     args = parser.parse_args()
 
     if args.generate:
@@ -754,16 +777,25 @@ def main() -> None:
         parser.error("--fps 必须在 0.2 到 5 之间")
     if args.max_long_side_pixel is not None and args.max_long_side_pixel <= 0:
         parser.error("--max-long-side-pixel 必须为正整数")
+    if args.max_tokens is not None and args.max_tokens <= 0:
+        parser.error("--max-tokens 必须为正整数")
 
     prompt = args.prompt
     if prompt is None:
-        prompt = sys.stdin.read().strip()
+        prompt = "" if sys.stdin.isatty() else sys.stdin.read().strip()
+    if not prompt:
+        prompt = "请详细描述这张图片或视频的内容，包括所有可见文字、主体、布局和关键细节，用中文回答。"
+    max_tokens = args.max_tokens
+    if args.concise:
+        if max_tokens is None:
+            max_tokens = 400
+        prompt = prompt.rstrip() + "\n\n请用中文简洁回答：不要使用 emoji 和 Markdown 表格，控制在 200 字以内。"
 
     # 位置参数自动识别：视频扩展名归入 --video 通道，其余按图片处理
     images = []
     videos = list(args.video)
     for item in args.images:
-        if Path(item).suffix.lower() in VIDEO_EXTS:
+        if _suffix_of(item) in VIDEO_EXTS:
             videos.append(item)
         else:
             images.append(item)
@@ -778,6 +810,8 @@ def main() -> None:
     upload_cache = {}
     errors = []
     for provider in providers:
+        if videos and provider["name"] != "minimax":
+            print(f"[警告] {provider['name']} 可能不支持视频输入（历史上 GLM 对视频返回图片格式错误），若失败将终止", file=sys.stderr)
         data = None
         for tight in (False, True):
             try:
@@ -795,7 +829,7 @@ def main() -> None:
                     args.timeout,
                     tight=tight,
                 )
-                payload = build_payload(provider, content, thinking)
+                payload = build_payload(provider, content, thinking, max_tokens)
                 data = call_provider(provider, payload, args.timeout)
                 break
             except PayloadTooLargeError as e:

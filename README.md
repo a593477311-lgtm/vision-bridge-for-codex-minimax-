@@ -28,6 +28,10 @@ Codex 多模态桥接技能：图片/视频理解 + 文生图，基于 MiniMax �
 # 图片理解
 python vision.py 图片.png -p "描述这张图片"
 
+# 简洁回答 / 限制长度（批量检查、节省 token）
+python vision.py 图片.png --concise -p "总结这张图片"
+python vision.py 图1.jpg 图2.jpg --max-tokens 500 -p "逐张回答：内容是什么？"
+
 # 视频理解（本地小视频自动转 base64，大视频自动上传 Files API）
 python vision.py 视频.mp4 -p "总结视频内容"
 
@@ -48,6 +52,9 @@ python vision.py --generate "..." --gen-model image-01-live --style 水彩 --asp
 - `--upload`：本地视频强制走 Files API
 - `--provider glm`：强制使用 GLM
 - `--json`：输出完整原始响应
+- `--max-tokens <数量>`：限制回答长度（批量检查推荐 300-900）
+- `--concise`：简洁中文回答（≤200 字、不用 emoji/表格）
+- `--timeout <秒>`：单次请求超时（默认 180，大文件上传可调大）
 - 文生图：`--gen-model image-01|image-01-live`、`--aspect-ratio 1:1|16:9|4:3|3:2|2:3|3:4|9:16|21:9`、`--count 1-9`、`--width/--height`（仅 image-01）、`--style`（仅 image-01-live）、`--seed`、`--prompt-optimizer`、`--watermark`、`--save-dir <目录>`
 
 ## 配置

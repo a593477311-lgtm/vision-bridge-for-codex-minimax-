@@ -26,8 +26,32 @@ python "C:\Users\gg1\.codex\skills\vision-bridge\scripts\vision.py" "<图片或�
 - 文件（仅 URL / `mm_file://`，非官方保证能力）：`python vision.py --file https://example.com/doc.pdf -p "总结"`。
 - 文生图：`python vision.py --generate "一只橘猫坐在窗台上，黄昏光线，电影感"`，默认只输出图片 URL（24 小时有效）。
 - 常用生图参数：`--gen-model image-01|image-01-live`、`--aspect-ratio 1:1|16:9|4:3|3:2|2:3|3:4|9:16|21:9`、`--count 1-9`、`--width/--height`（仅 image-01，512-2048 且为 8 的倍数）、`--style`（仅 live）、`--seed`、`--prompt-optimizer`、`--watermark`、`--save-dir <目录>`（下载到本地，方便直接展示）。
-- 问题缺省时从 stdin 读取：`echo "请描述画面" | python vision.py 图片.png`。
-- 可选参数：`--detail low|default|high`（默认 default）、`--fps 0.2-5`（视频抽帧，默认 1）、`--max-long-side-pixel <像素>`、`--upload`（本地视频强制走 Files API）、`--thinking`、`--provider glm`、`--json`、`--model <名>`。
+- 问题缺省时从 stdin 读取；stdin 无输入时自动使用默认描述提示词，不会卡住：`echo "请描述画面" | python vision.py 图片.png`。
+- 可选参数：`--detail low|default|high`（默认 default）、`--fps 0.2-5`（视频抽帧，默认 1）、`--max-long-side-pixel <像素>`、`--upload`（本地视频强制走 Files API）、`--thinking`、`--provider glm`、`--json`、`--model <名>`、`--max-tokens <数量>`（限制回答长度，批量检查推荐 300-900）、`--concise`（简洁中文回答：≤200 字、不用 emoji/表格，默认 max-tokens=400）。
+- 超时：脚本默认 `--timeout 180` 秒；大文件上传或高细节分析建议调用方把 shell 的 timeout_ms 设为 `--timeout + 60` 以上（如 300000）。
+
+## 常用场景
+
+- 截图 OCR / 全量识别（文件列表、命令、界面元素逐项解释）：
+  `python vision.py 截图.png -p "请完整识别截图中的全部文字和内容，并逐个解释每一项是什么、有什么作用，用中文回答。" --detail high`
+- 界面描述（软件/网页/报错/会话列表）：
+  `python vision.py 截图.png -p "这是什么软件界面？有哪些窗口/面板/文字/会话列表/按钮？特别注意报错信息和当前状态。"`
+- 批量质检（水印/乱码/构图/留白，逐张回答）：
+  `python vision.py 图1.jpg 图2.jpg 图3.jpg --concise -p "逐张检查：1) 是否干净无乱码；2) 是否含文字/数字/水印；3) 内容大致是什么。格式：编号: 结论。"`
+- 多图对比：
+  `python vision.py a.png b.png -p "对比这两张图：共同点和差异，逐项说明。"`
+- 文生图并保存本地（方便直接展示）：
+  `python vision.py --generate "一只橘猫坐在窗台上，黄昏光线，电影感" --gen-model image-01-live --style "水彩" --aspect-ratio 16:9 --save-dir outputs`
+
+## 常见问题（实际使用中踩过的坑）
+
+- Windows 终端 GBK 乱码 / UnicodeEncodeError：本脚本已自动把 stdout/stderr 切到 UTF-8；若调用旧脚本或第三方脚本，先执行 `$env:PYTHONIOENCODING='utf-8'`。
+- HTTP 429 限流：已自动指数退避重试（最多 3 次）并支持 `Retry-After`；仍失败会自动降级 GLM（图片场景）。
+- 视频被当成图片（报 `image data url media type "video/mp4" not supported`）：本地路径与 URL 已按扩展名自动分流，带查询参数的视频 URL 也已兼容；仍异常时显式用 `--video <路径或URL>`。
+- HTTP 422 / `sensitive`：MiniMax 内容安全过滤，调整图片或描述后重试，或改用 `--provider glm`。
+- 请求超时：调大 `--timeout`（如 300），并让调用方 timeout_ms 更大。
+- 视频输入降级 GLM 大概率失败：GLM 可能不支持视频，脚本会给出警告并如实报错，不要误以为是路径问题。
+- API Key 明文存放在 `scripts\vision_config.json`：建议改用环境变量 `MINIMAX_API_KEY` / `ZHIPU_API_KEY` 覆盖，避免配置文件外泄。
 
 ## 注意
 

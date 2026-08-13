@@ -32,6 +32,7 @@
   python vision.py 图片.png -p "..." --provider glm  # 强制指定提供商
   python vision.py 图片.png -p "..." --concise       # 简短回答（≤200字、不用 emoji/表格）
   python vision.py 图片.png -p "..." --max-tokens 400  # 限制回答长度
+  python vision.py 图片.png --for-llm -p "用户问题"   # 面向无视觉模型（DeepSeek）的结构化抽取
 
 文生图示例：
   python vision.py --generate "一只橘猫坐在窗台上，黄昏光线，电影感"
@@ -102,6 +103,20 @@ REQUEST_BODY_MAX_BYTES = 64 * 1024 * 1024
 IMAGE_COMPRESS_TARGET = 8 * 1024 * 1024
 IMAGE_COMPRESS_TARGET_TIGHT = 1_500_000
 DOWNLOAD_HARD_CAP = 600 * 1024 * 1024
+
+FOR_LLM_TEMPLATE = """你是不能直接查看图片的文本模型（如 DeepSeek）的“眼睛”。以下内容将原样交给没有视觉能力的模型，必须客观、完整、结构化。即使问题只关注某一方面，也请保留 1-7 全部小节骨架（内容可精简，但不要整节缺失）。
+
+1) 图片类型与整体布局：IDE/终端/网页/APP/图表/海报/文档等；按从上到下、从左到右描述主要区域，并给出图片尺寸（如 1440x900）与各区域估算坐标（百分比即可，标注“估算”）。
+2) 文字提取（逐字）：把图中所有可见文字原样列出（标题、代码、报错、按钮、占位符、输入值、菜单、URL、版本号等），并区分文字类型；不确定的字符标“[存疑]”，不要猜词或编造。
+3) 空间关系（重点）：元素相对位置与层级：谁在谁的上方/左侧/内部、对齐、间距、嵌套、遮罩/弹窗相对主窗口；重要元素给百分比坐标或网格位置。
+4) 颜色与状态（重点）：主色调与高亮色（描述性颜色即可，hex 仅作估算），颜色语义：报错红/成功绿/警告黄/语法高亮/深浅主题/禁用灰；指出用颜色区分状态的元素。
+5) 数据/图表（如适用）：坐标轴、单位、具体数值/趋势；表格或列表给出结构化映射（列名→值 或 JSON）。
+6) 界面元素状态（如适用）：窗口/面板/按钮/输入框/弹窗/加载/空态/错误态的位置与状态。
+7) 结论与推断分开：先列“可观察事实”，再单列“推断:”并标注不确定；疑似推断的判断（焦点、选中、当前行、展开态）必须放入推断区。
+
+规则：只陈述图中可见内容；看不到的写“未显示/无法确定”；不要使用 emoji；用中文回答。"""
+
+DEFAULT_DESCRIBE_PROMPT = "请详细描述这张图片或视频的内容，包括所有可见文字、主体、布局和关键细节，用中文回答。"
 
 
 def _suffix_of(item: str) -> str:
@@ -744,6 +759,7 @@ def main() -> None:
     parser.add_argument("--timeout", type=int, default=180, help="单次请求超时秒数，默认 180（大文件上传可调大）")
     parser.add_argument("--max-tokens", type=int, help="限制回答最大 token 数（批量检查推荐 300-900）")
     parser.add_argument("--concise", action="store_true", help="要求简洁中文回答（≤200字、不用 emoji/表格），默认 max-tokens=400")
+    parser.add_argument("--for-llm", action="store_true", help="面向无视觉模型（DeepSeek）的结构化抽取模式：逐字文字/空间/颜色/事实与推断分离；默认 max-tokens 2400、detail high")
     args = parser.parse_args()
 
     if args.generate:
@@ -783,13 +799,23 @@ def main() -> None:
     prompt = args.prompt
     if prompt is None:
         prompt = "" if sys.stdin.isatty() else sys.stdin.read().strip()
+    user_question = prompt
     if not prompt:
-        prompt = "请详细描述这张图片或视频的内容，包括所有可见文字、主体、布局和关键细节，用中文回答。"
+        prompt = DEFAULT_DESCRIBE_PROMPT
+    if args.for_llm:
+        prompt = FOR_LLM_TEMPLATE
+        if user_question:
+            prompt += "\n\n用户的原始问题（请优先提取回答该问题所需的信息）：" + user_question
     max_tokens = args.max_tokens
+    if args.for_llm and max_tokens is None:
+        max_tokens = 2400
     if args.concise:
         if max_tokens is None:
             max_tokens = 400
         prompt = prompt.rstrip() + "\n\n请用中文简洁回答：不要使用 emoji 和 Markdown 表格，控制在 200 字以内。"
+    detail = args.detail
+    if detail is None and args.for_llm:
+        detail = "high"
 
     # 位置参数自动识别：视频扩展名归入 --video 通道，其余按图片处理
     images = []
@@ -811,7 +837,7 @@ def main() -> None:
     errors = []
     for provider in providers:
         if videos and provider["name"] != "minimax":
-            print(f"[警告] {provider['name']} 可能不支持视频输入（历史上 GLM 对视频返回图片格式错误），若失败将终止", file=sys.stderr)
+            print(f"[警告] {provider['name']} 可能不支持视频输入，若失败将终止", file=sys.stderr)
         data = None
         for tight in (False, True):
             try:
@@ -821,7 +847,7 @@ def main() -> None:
                     videos,
                     args.file,
                     prompt,
-                    args.detail,
+                    detail,
                     args.fps,
                     args.max_long_side_pixel,
                     args.upload,

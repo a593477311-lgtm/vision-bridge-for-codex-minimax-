@@ -54,6 +54,7 @@ python vision.py --generate "..." --gen-model image-01-live --style 水彩 --asp
 - `--json`：输出完整原始响应
 - `--max-tokens <数量>`：限制回答长度（批量检查推荐 300-900）
 - `--concise`：简洁中文回答（≤200 字、不用 emoji/表格）
+- `--for-llm`：面向无视觉模型（如 DeepSeek）的结构化抽取，输出逐字文字、空间关系、颜色语义与事实/推断分离的描述（默认 max-tokens 2400、detail high）
 - `--timeout <秒>`：单次请求超时（默认 180，大文件上传可调大）
 - 文生图：`--gen-model image-01|image-01-live`、`--aspect-ratio 1:1|16:9|4:3|3:2|2:3|3:4|9:16|21:9`、`--count 1-9`、`--width/--height`（仅 image-01）、`--style`（仅 image-01-live）、`--seed`、`--prompt-optimizer`、`--watermark`、`--save-dir <目录>`
 

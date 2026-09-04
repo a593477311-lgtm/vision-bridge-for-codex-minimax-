@@ -46,6 +46,7 @@ import io
 import json
 import mimetypes
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -117,6 +118,82 @@ FOR_LLM_TEMPLATE = """你是不能直接查看图片的文本模型（如 DeepSe
 规则：只陈述图中可见内容；看不到的写“未显示/无法确定”；不要使用 emoji；用中文回答。"""
 
 DEFAULT_DESCRIBE_PROMPT = "请详细描述这张图片或视频的内容，包括所有可见文字、主体、布局和关键细节，用中文回答。"
+
+
+# MiniMax-M3 可能把 interleaved thinking 放在 content 中，也可能单独放在
+# reasoning_content 字段中。渲染前统一清理，避免思考内容进入调用方上下文。
+_THINK_OPEN_RE = re.compile(r"<think\b[^>]*>", re.IGNORECASE)
+_THINK_CLOSE_RE = re.compile(r"</think\s*>", re.IGNORECASE)
+_UNCLOSED_BODY_RE = re.compile(
+    r"(?:^|\r?\n)[ \t]*(?="
+    r"(?:#{1,6}\s+|[-*+]\s+|\d+[.)、]\s+|"
+    r"(?:正文|回答|识别报告|截图完整识别报告)[：:]?)"
+    r")",
+    re.IGNORECASE,
+)
+_THINK_JSON_KEYS = {
+    "reasoning",
+    "reasoning_content",
+    "reasoning_details",
+    "thought",
+    "thoughts",
+    "think",
+    "thinking",
+    "thinking_content",
+}
+
+
+def strip_think_blocks(text: str) -> str:
+    """删除成对或截断的 ``<think>`` 块，同时保留可识别的正文。
+
+    正常响应使用成对标签，多个块也逐个处理。若流式响应在闭合标签前
+    截断，优先保留同一响应中明显的正文起始行（标题、列表或回答标记）；
+    没有可靠正文边界时宁可丢弃未闭合块，不能把思考内容泄漏给调用方。
+    """
+    if not isinstance(text, str) or "<think" not in text.lower():
+        return text
+
+    result = []
+    cursor = 0
+    while True:
+        opening = _THINK_OPEN_RE.search(text, cursor)
+        if opening is None:
+            result.append(text[cursor:])
+            break
+
+        result.append(text[cursor:opening.start()])
+        closing = _THINK_CLOSE_RE.search(text, opening.end())
+        if closing is not None:
+            cursor = closing.end()
+            continue
+
+        # 未闭合的 <think> 可能是流式截断。仅在后续出现明显正文起始
+        # 行时保留其后的正文，否则删除到响应末尾，确保思考不外泄。
+        after = text[opening.end():]
+        body = _UNCLOSED_BODY_RE.search(after)
+        if body is not None:
+            # 正文中若还包含其他（成对的）标签，也继续清理，避免在
+            # “保留正文”分支绕过后续 think 块。
+            result.append(strip_think_blocks(after[body.start():]))
+        break
+
+    return "".join(result).strip()
+
+
+def sanitize_response(value):
+    """为 --json 深拷贝式清理响应中的思考字段和文本标签。"""
+    if isinstance(value, dict):
+        cleaned = {}
+        for key, item in value.items():
+            if str(key).lower() in _THINK_JSON_KEYS:
+                continue
+            cleaned[key] = sanitize_response(item)
+        return cleaned
+    if isinstance(value, list):
+        return [sanitize_response(item) for item in value]
+    if isinstance(value, str):
+        return strip_think_blocks(value)
+    return value
 
 
 def _suffix_of(item: str) -> str:
@@ -696,26 +773,24 @@ def run_generate(provider: dict, args) -> None:
 
 
 def render_message(msg: dict) -> None:
-    if msg.get("reasoning_content"):
-        print("[思考过程]")
-        print(msg["reasoning_content"])
-        print()
+    # reasoning_content 是供应商的内部思考，不向调用方输出；content 中
+    # 可能仍嵌有 <think> 标签，因此每个文本出口都再做一次兜底清理。
     content = msg.get("content")
     if content is None:
         return
     if isinstance(content, str):
-        print(content)
+        print(strip_think_blocks(content))
     elif isinstance(content, list):
         for part in content:
             if isinstance(part, str):
-                print(part)
+                print(strip_think_blocks(part))
             elif isinstance(part, dict):
                 if part.get("type") == "text":
-                    print(part.get("text", ""))
+                    print(strip_think_blocks(part.get("text", "")))
                 elif part.get("type") == "image_url":
                     print(f"[图片输出: {part.get('image_url', {}).get('url', '')}]")
     else:
-        print(str(content))
+        print(strip_think_blocks(str(content)))
 
 
 def print_usage(provider: dict, data: dict) -> None:
@@ -872,7 +947,7 @@ def main() -> None:
         if data is None:
             continue
         if args.json:
-            print(json.dumps(data, ensure_ascii=False, indent=2))
+            print(json.dumps(sanitize_response(data), ensure_ascii=False, indent=2))
             return
         try:
             msg = data["choices"][0]["message"]

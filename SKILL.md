@@ -87,6 +87,7 @@ python "C:\Users\gg1\.codex\skills\vision-bridge\scripts\vision.py" "<图片或�
 - HTTP 422 / `sensitive`：MiniMax 内容安全过滤，调整图片或描述后重试，或改用 `--provider glm`。
 - 请求超时：调大 `--timeout`（如 300），并让调用方 timeout_ms 更大。
 - 视频输入降级 GLM 大概率失败：GLM 可能不支持视频，脚本会给出警告并如实报错，不要误以为是路径问题。
+- 输出已自动剥离 MiniMax/GLM 的 `<think>...</think>` 思考内容（包括 `--json`、`--for-llm` 和截断的未闭合标签）；若上游再次泄漏，先检查是否调用了活跃目录 `scripts\vision.py`、再用 `--json` 查看清理后的响应并确认响应字段中没有 `reasoning_content`，必要时保留脱敏响应和复现命令排查。
 - API Key 明文存放在 `scripts\vision_config.json`：建议改用环境变量 `MINIMAX_API_KEY` / `ZHIPU_API_KEY` 覆盖，避免配置文件外泄。
 
 ## 注意
